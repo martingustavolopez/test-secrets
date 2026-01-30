@@ -1,0 +1,109 @@
+name: Deploy SISCOOP - DEVELOP
+on:
+  push:
+    branches:
+      - 'develop'
+    paths-ignore:
+       - '.github/**'
+
+env:
+  ruta-clone: "/opt/GA/projects/SISCOOP-develop"
+  image-name: 'ltrodckrapqa01:8082/siscoop'
+  container-name: aplicacion-siscoop
+  repo-name: "DDPP_SISCOOP_APLICACION"
+  ambiente: develop
+
+jobs:
+
+  clone-repository:
+    runs-on: ltrodckrapde01-org
+    environment: develop
+    steps:
+      - name: Clonar repositorio
+        run: |
+          git clone -b ${{env.ambiente}} -c http.sslVerify=false https://${{secrets.TK_GITHUB_ORG}}@github.pro.edenor/edenorsa/${{env.repo-name}}.git ${{env.ruta-clone}}
+
+      - name: Modificar archivo de properties - develop
+        run: |
+          sed -i 's|\${{secrets.PASSWORD_LDAP}}|${{ secrets.PASSWORD_LDAP }}|g' ${{env.ruta-clone}}/src/main/resources/siscoop_ad_des.properties
+          echo "✅ Secrets reemplazados en siscoop_ad_desa.properties"
+
+          sed -i 's|\${{secrets.DB_PASSWORD_USUARIO}}|${{ secrets.DB_PASSWORD_USUARIO }}|g' ${{env.ruta-clone}}/src/main/resources/siscoop_db_des.properties
+          sed -i 's|\${{secrets.DB_PASSWORD_ADMIN}}|${{ secrets.DB_PASSWORD_ADMIN }}|g' ${{env.ruta-clone}}/src/main/resources/siscoop_db_des.properties          
+          echo "✅ Secrets reemplazados en siscoop_db_desa.properties"
+
+  delete-containers-and-image:
+    needs: clone-repository
+    runs-on: ltrodckrapde01-org
+    steps:
+      - name: Eliminar contenedores existentes
+        run: |
+          set -euo pipefail
+          for image in "${{env.image-name}}"; do
+            containers=$(docker ps -a --format "{{.ID}}\t{{.Image}}" | grep "$image" | awk '{print $1}' || true)
+            [ -n "$containers" ] && echo "$containers" | xargs -r docker rm -f || echo "No matching containers"
+          done
+
+      - name: Eliminar imágenes existentes
+        run: |
+          set -euo pipefail
+          for image in "${{env.image-name}}"; do
+            images=$(docker images --format "{{.ID}}\t{{.Repository}}:{{.Tag}}" | grep "$image" | awk '{print $1}' || true)
+            [ -n "$images" ] && echo "$images" | xargs -r docker rmi -f || echo "No matching images"
+          done
+
+  build-and-deploy:
+    needs: delete-containers-and-image
+    runs-on: ltrodckrapde01-org
+    steps:
+      - name: Buildear Imagen Productiva
+        run: |
+          cd ${{env.ruta-clone}}
+          TAG="latest"
+          echo "📦 Building image with tag: $TAG"
+          docker build -t ${{ env.image-name }}:${TAG} .
+
+      - name: Desplegar contenedor Docker
+        run: |
+          set -euo pipefail
+          TAG="latest"
+          docker run -d --name "${{env.container-name}}" \
+            -p 8471:8471 \
+            -p 7151:7151 \
+            --cpus="0.2" --memory="1g" \
+            --network=siscoop_network \
+            "${{env.image-name}}:${TAG}"
+      
+  cleanup-workspace:
+    needs: [clone-repository, build-and-deploy]
+    if: always()
+    runs-on: ltrodckrapde01-org
+    steps:
+      - name: Limpieza del workspace
+        run: |
+          rm -rf ${{env.ruta-clone}}
+          echo "✅ Workspace limpio"
+
+  send-email-success:
+    needs: [build-and-deploy]
+    if: ${{ success() }}
+    runs-on: ltroipcapde01-svc_ghaction
+    steps:
+     - name: Check success and send success email
+       run: |
+        STATUS="El pipeline ha finalizado correctamente."
+        SUBJECT="✅ Pipeline Github Actions finalizo OK '${{env.repo-name}}/${{env.ambiente}}' "
+        response=$(curl --location "https://github.pro.edenor/api/v3/repos/edenorsa/${{env.repo-name}}/commits?sha=${{env.ambiente}}&per_page=1" --header "Authorization: Bearer ${{secrets.TK_GITHUB_ORG}}" --insecure)
+        last_commit_message=$(echo "$response" | jq -r '.[0].commit.message' 2>/dev/null)
+        echo -e "=========================================================\n=========================================================\nCommit: ${last_commit_message}\n$STATUS\nWorkflow: ${GITHUB_WORKFLOW}\nRepositorio: ${GITHUB_REPOSITORY}\nNúmero de ejecución: ${GITHUB_RUN_NUMBER}\nEnlace al pipeline: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\n=========================================================\n=========================================================" | mailx -s "$SUBJECT" sjbarrios@edenor.com, mglopez@edenor.com, rsleiva@edenor.com
+
+  send-email-failure:
+    runs-on: ltroipcapde01-svc_ghaction
+    needs: [clone-repository, delete-containers-and-image, build-and-deploy]
+    if: ${{ failure() }}
+    steps:
+      - name: Check failure and send failure email 
+        run: |
+          STATUS="El pipeline ha fallado, por favor, revisar el mismo."
+          SUBJECT="⚠️ Revisar Pipeline Github Actions ${{ env.repo-name }}, Los Logs estan en el Enlace al pipeline"
+          echo -e "=========================================================\n=========================================================\n$STATUS\nWorkflow: ${GITHUB_WORKFLOW}\nRepositorio: ${GITHUB_REPOSITORY}\nNúmero de ejecución: ${GITHUB_RUN_NUMBER}\nEnlace al pipeline: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\n=========================================================\n=========================================================" | mailx -s "$SUBJECT" sjbarrios@edenor.com, mglopez@edenor.com, rsleiva@edenor.com
