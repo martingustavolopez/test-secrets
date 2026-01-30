@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: secrets-demo-app
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      # Environment identifier
+      - ENVIRONMENT=${ENVIRONMENT:-dev}
+      - PORT=3000
+
+      # Secrets inyectados desde GitHub Actions o .env local
+      - API_KEY=${API_KEY}
+      - DB_HOST=${DB_HOST}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - EXTERNAL_API_URL=${EXTERNAL_API_URL}
+      - EXTERNAL_API_TOKEN=${EXTERNAL_API_TOKEN}
+      - FEATURE_FLAG_PREMIUM=${FEATURE_FLAG_PREMIUM:-false}
+
+    # Recursos limitados (similar a tu pipeline)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Network (opcional, similar a tu pipeline que usa siscoop_network)
+networks:
+  default:
+    name: secrets-demo-network

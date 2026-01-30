@@ -1,0 +1,194 @@
+name: 🟢 Deploy to PRODUCTION
+
+on:
+  push:
+    branches:
+      - 'main'
+      - 'master'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+  workflow_dispatch:
+
+env:
+  ENVIRONMENT: prod
+  CONTAINER_NAME: secrets-demo-prod
+  IMAGE_NAME: secrets-demo
+  PORT: 3000
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest  # Usar tu runner de producción
+    environment:
+      name: production  # ⭐ Environment de producción con sus secrets específicos
+      url: http://localhost:3000  # URL opcional para acceso rápido
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🛑 Stop and remove existing container
+        run: |
+          echo "🔍 Buscando contenedores existentes..."
+          if [ "$(docker ps -aq -f name=${{ env.CONTAINER_NAME }})" ]; then
+            echo "🗑️ Eliminando contenedor existente: ${{ env.CONTAINER_NAME }}"
+            docker rm -f ${{ env.CONTAINER_NAME }}
+          else
+            echo "✅ No hay contenedores previos"
+          fi
+        continue-on-error: true
+
+      - name: 🧹 Remove old images (keep last 2)
+        run: |
+          echo "🔍 Limpiando imágenes antiguas (manteniendo últimas 2)..."
+          docker images ${{ env.IMAGE_NAME }} --format "{{.ID}}" | tail -n +3 | xargs -r docker rmi -f || true
+        continue-on-error: true
+
+      - name: 🐳 Build Docker image
+        run: |
+          echo "📦 Building Docker image for PRODUCTION..."
+          BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+          docker build \
+            -t ${{ env.IMAGE_NAME }}:prod \
+            -t ${{ env.IMAGE_NAME }}:prod-${{ github.sha }} \
+            --label "build.date=${BUILD_DATE}" \
+            --label "git.commit=${{ github.sha }}" \
+            --label "git.branch=${GITHUB_REF##*/}" \
+            .
+
+          echo "✅ Image built successfully"
+          docker images ${{ env.IMAGE_NAME }}
+
+      - name: 🚀 Deploy container with secrets
+        run: |
+          echo "🚀 Desplegando contenedor en PRODUCTION..."
+
+          # ⭐ PRODUCCIÓN: Secrets configurados en environment 'production'
+          # Settings > Environments > production > Secrets
+          # Estos secrets pueden tener protección adicional (required reviewers, etc.)
+
+          docker run -d \
+            --name ${{ env.CONTAINER_NAME }} \
+            -p ${{ env.PORT }}:3000 \
+            --cpus="1.0" \
+            --memory="1g" \
+            --restart unless-stopped \
+            -e ENVIRONMENT=${{ env.ENVIRONMENT }} \
+            -e PORT=3000 \
+            -e API_KEY="${{ secrets.API_KEY }}" \
+            -e DB_HOST="${{ secrets.DB_HOST }}" \
+            -e DB_USER="${{ secrets.DB_USER }}" \
+            -e DB_PASSWORD="${{ secrets.DB_PASSWORD }}" \
+            -e EXTERNAL_API_URL="${{ secrets.EXTERNAL_API_URL }}" \
+            -e EXTERNAL_API_TOKEN="${{ secrets.EXTERNAL_API_TOKEN }}" \
+            -e FEATURE_FLAG_PREMIUM="${{ secrets.FEATURE_FLAG_PREMIUM }}" \
+            ${{ env.IMAGE_NAME }}:prod
+
+          echo "✅ Container deployed successfully"
+
+      - name: 🏥 Health check
+        run: |
+          echo "⏳ Esperando que el contenedor esté listo..."
+          sleep 5
+
+          for i in {1..15}; do
+            if docker exec ${{ env.CONTAINER_NAME }} node -e "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"; then
+              echo "✅ Health check passed!"
+              docker logs ${{ env.CONTAINER_NAME }} --tail 20
+              exit 0
+            fi
+            echo "⏳ Intento $i/15 - Esperando..."
+            sleep 3
+          done
+
+          echo "❌ Health check failed"
+          docker logs ${{ env.CONTAINER_NAME }}
+          exit 1
+
+      - name: 📊 Show deployment info
+        if: success()
+        run: |
+          echo "=========================================="
+          echo "✅ DEPLOYMENT SUCCESSFUL - PRODUCTION"
+          echo "=========================================="
+          echo "Environment: ${{ env.ENVIRONMENT }}"
+          echo "Container: ${{ env.CONTAINER_NAME }}"
+          echo "Port: ${{ env.PORT }}"
+          echo "Image: ${{ env.IMAGE_NAME }}:prod"
+          echo "Git Commit: ${{ github.sha }}"
+          echo "=========================================="
+          echo "🔗 Access the app at: http://localhost:${{ env.PORT }}"
+          echo "🔍 Health check: http://localhost:${{ env.PORT }}/health"
+          echo "⚙️  Config: http://localhost:${{ env.PORT }}/config"
+          echo "=========================================="
+          echo "📋 Secrets loaded from GitHub Environment 'production':"
+          echo "  - API_KEY: ${{ secrets.API_KEY != '' && '✅ Set' || '❌ Not set' }}"
+          echo "  - DB_HOST: ${{ secrets.DB_HOST != '' && '✅ Set' || '❌ Not set' }}"
+          echo "  - DB_USER: ${{ secrets.DB_USER != '' && '✅ Set' || '❌ Not set' }}"
+          echo "  - DB_PASSWORD: ${{ secrets.DB_PASSWORD != '' && '✅ Set (hidden)' || '❌ Not set' }}"
+          echo "  - EXTERNAL_API_URL: ${{ secrets.EXTERNAL_API_URL != '' && '✅ Set' || '❌ Not set' }}"
+          echo "  - EXTERNAL_API_TOKEN: ${{ secrets.EXTERNAL_API_TOKEN != '' && '✅ Set (hidden)' || '❌ Not set' }}"
+          echo "  - FEATURE_FLAG_PREMIUM: ${{ secrets.FEATURE_FLAG_PREMIUM }}"
+          echo "=========================================="
+          echo "📈 Container stats:"
+          docker stats ${{ env.CONTAINER_NAME }} --no-stream
+
+      - name: 📧 Notify success
+        if: success()
+        run: |
+          echo "=========================================="
+          echo "✅ PRODUCTION DEPLOYMENT COMPLETED"
+          echo "=========================================="
+          echo "Workflow: ${GITHUB_WORKFLOW}"
+          echo "Repository: ${GITHUB_REPOSITORY}"
+          echo "Run number: ${GITHUB_RUN_NUMBER}"
+          echo "Run URL: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          echo "Deployed commit: ${{ github.sha }}"
+          echo "=========================================="
+
+      - name: 📧 Notify failure
+        if: failure()
+        run: |
+          echo "=========================================="
+          echo "❌ PRODUCTION DEPLOYMENT FAILED"
+          echo "=========================================="
+          echo "Workflow: ${GITHUB_WORKFLOW}"
+          echo "Repository: ${GITHUB_REPOSITORY}"
+          echo "Run URL: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          echo "=========================================="
+          echo "⚠️  CRITICAL: Production deployment failed!"
+          echo "Please check logs and take immediate action."
+          echo "=========================================="
+
+  cleanup-workspace:
+    name: Cleanup Workspace
+    needs: [deploy]
+    if: always()  # Se ejecuta siempre, sin importar si deploy tuvo éxito o falló
+    runs-on: ubuntu-latest  # Usar tu runner de producción
+
+    steps:
+      - name: 🧹 Limpiar workspace
+        run: |
+          echo "🧹 Limpiando workspace..."
+
+          # Limpiar archivos de Git
+          if [ -d "${{ github.workspace }}" ]; then
+            cd "${{ github.workspace }}"
+            git clean -ffdx || echo "⚠️  Git clean falló (puede no existir repo)"
+            git reset --hard || echo "⚠️  Git reset falló"
+          fi
+
+          # Limpiar todo el workspace
+          rm -rf "${{ github.workspace }}" || echo "⚠️  No se pudo eliminar workspace"
+
+          echo "✅ Workspace limpiado"
+
+      - name: 🗑️ Limpiar imágenes Docker dangling (opcional)
+        run: |
+          echo "🗑️ Limpiando imágenes dangling..."
+          docker image prune -f || echo "⚠️  Docker prune falló"
+          echo "✅ Imágenes dangling eliminadas"
+        continue-on-error: true

@@ -1,0 +1,175 @@
+name: 🟡 Deploy to DEVELOPMENT
+
+on:
+  push:
+    branches:
+      - 'develop'
+      - 'dev'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+  workflow_dispatch:  # Permite ejecución manual
+
+env:
+  ENVIRONMENT: dev
+  CONTAINER_NAME: secrets-demo-dev
+  IMAGE_NAME: secrets-demo
+  PORT: 3001
+
+jobs:
+  deploy:
+    name: Deploy to Development
+    runs-on: ltrodckrapde01-org
+    environment: development  # ⭐ Esto vincula con los secrets del environment
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🛑 Stop and remove existing container
+        run: |
+          echo "🔍 Buscando contenedores existentes..."
+          if [ "$(docker ps -aq -f name=${{ env.CONTAINER_NAME }})" ]; then
+            echo "🗑️ Eliminando contenedor existente: ${{ env.CONTAINER_NAME }}"
+            docker rm -f ${{ env.CONTAINER_NAME }}
+          else
+            echo "✅ No hay contenedores previos"
+          fi
+        continue-on-error: true
+
+      - name: 🧹 Remove old images
+        run: |
+          echo "🔍 Buscando imágenes antiguas..."
+          if [ "$(docker images -q ${{ env.IMAGE_NAME }}:dev)" ]; then
+            echo "🗑️ Eliminando imagen antigua"
+            docker rmi -f ${{ env.IMAGE_NAME }}:dev || true
+          fi
+        continue-on-error: true
+
+      - name: 🐳 Build Docker image
+        run: |
+          echo "📦 Building Docker image for DEVELOPMENT..."
+          docker build \
+            -t ${{ env.IMAGE_NAME }}:dev \
+            -t ${{ env.IMAGE_NAME }}:latest \
+            .
+          echo "✅ Image built successfully"
+
+      - name: 🚀 Deploy container with secrets
+        run: |
+          echo "🚀 Desplegando contenedor en DEVELOPMENT..."
+
+          # ⭐ IMPORTANTE: Los secrets se inyectan como variables de entorno
+          # Estos valores vienen de: Settings > Environments > development > Secrets
+
+          docker run -d \
+            --name ${{ env.CONTAINER_NAME }} \
+            -p ${{ env.PORT }}:3000 \
+            --cpus="0.5" \
+            --memory="512m" \
+            --restart unless-stopped \
+            -e ENVIRONMENT=${{ env.ENVIRONMENT }} \
+            -e PORT=3000 \
+            -e API_KEY="${{ secrets.API_KEY }}" \
+            -e DB_HOST="${{ secrets.DB_HOST }}" \
+            -e DB_USER="${{ secrets.DB_USER }}" \
+            -e DB_PASSWORD="${{ secrets.DB_PASSWORD }}" \
+            -e EXTERNAL_API_URL="${{ secrets.EXTERNAL_API_URL }}" \
+            -e EXTERNAL_API_TOKEN="${{ secrets.EXTERNAL_API_TOKEN }}" \
+            -e FEATURE_FLAG_PREMIUM="${{ secrets.FEATURE_FLAG_PREMIUM }}" \
+            ${{ env.IMAGE_NAME }}:dev
+
+          echo "✅ Container deployed successfully"
+
+      - name: 🏥 Health check
+        run: |
+          echo "⏳ Esperando que el contenedor esté listo..."
+          sleep 5
+
+          for i in {1..10}; do
+            if docker exec ${{ env.CONTAINER_NAME }} node -e "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"; then
+              echo "✅ Health check passed!"
+              docker logs ${{ env.CONTAINER_NAME }} --tail 20
+              exit 0
+            fi
+            echo "⏳ Intento $i/10 - Esperando..."
+            sleep 3
+          done
+
+          echo "❌ Health check failed"
+          docker logs ${{ env.CONTAINER_NAME }}
+          exit 1
+
+      - name: 📊 Show deployment info
+        if: success()
+        run: |
+          echo "=========================================="
+          echo "✅ DEPLOYMENT SUCCESSFUL - DEVELOPMENT"
+          echo "=========================================="
+          echo "Environment: ${{ env.ENVIRONMENT }}"
+          echo "Container: ${{ env.CONTAINER_NAME }}"
+          echo "Port: ${{ env.PORT }}"
+          echo "Image: ${{ env.IMAGE_NAME }}:dev"
+          echo "=========================================="
+          echo "🔗 Access the app at: http://localhost:${{ env.PORT }}"
+          echo "🔍 Health check: http://localhost:${{ env.PORT }}/health"
+          echo "⚙️  Config: http://localhost:${{ env.PORT }}/config"
+          echo "=========================================="
+          echo "📋 Secrets loaded from GitHub Environment 'development':"
+          echo "  - API_KEY: ${{ secrets.API_KEY != '' && '✅ Set' || '❌ Not set' }}"
+          echo "  - DB_HOST: ${{ secrets.DB_HOST != '' && '✅ Set' || '❌ Not set' }}"
+          echo "  - DB_USER: ${{ secrets.DB_USER != '' && '✅ Set' || '❌ Not set' }}"
+          echo "  - DB_PASSWORD: ${{ secrets.DB_PASSWORD != '' && '✅ Set (hidden)' || '❌ Not set' }}"
+          echo "  - EXTERNAL_API_URL: ${{ secrets.EXTERNAL_API_URL != '' && '✅ Set' || '❌ Not set' }}"
+          echo "  - EXTERNAL_API_TOKEN: ${{ secrets.EXTERNAL_API_TOKEN != '' && '✅ Set (hidden)' || '❌ Not set' }}"
+          echo "  - FEATURE_FLAG_PREMIUM: ${{ secrets.FEATURE_FLAG_PREMIUM }}"
+          echo "=========================================="
+
+      - name: 📧 Notify success
+        if: success()
+        run: |
+          echo "✅ Pipeline completed successfully for DEVELOPMENT"
+          echo "Workflow: ${GITHUB_WORKFLOW}"
+          echo "Repository: ${GITHUB_REPOSITORY}"
+          echo "Run number: ${GITHUB_RUN_NUMBER}"
+          echo "Run URL: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: 📧 Notify failure
+        if: failure()
+        run: |
+          echo "❌ Pipeline failed for DEVELOPMENT"
+          echo "Workflow: ${GITHUB_WORKFLOW}"
+          echo "Repository: ${GITHUB_REPOSITORY}"
+          echo "Run URL: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          echo "Please check the logs above for details."
+
+  cleanup-workspace:
+    name: Cleanup Workspace
+    needs: [deploy]
+    if: always()  # Se ejecuta siempre, sin importar si deploy tuvo éxito o falló
+    runs-on: ltrodckrapde01-org
+
+    steps:
+      - name: 🧹 Limpiar workspace
+        run: |
+          echo "🧹 Limpiando workspace..."
+
+          # Limpiar archivos de Git
+          if [ -d "${{ github.workspace }}" ]; then
+            cd "${{ github.workspace }}"
+            git clean -ffdx || echo "⚠️  Git clean falló (puede no existir repo)"
+            git reset --hard || echo "⚠️  Git reset falló"
+          fi
+
+          # Limpiar todo el workspace
+          rm -rf "${{ github.workspace }}" || echo "⚠️  No se pudo eliminar workspace"
+
+          echo "✅ Workspace limpiado"
+
+      - name: 🗑️ Limpiar imágenes Docker dangling (opcional)
+        run: |
+          echo "🗑️ Limpiando imágenes dangling..."
+          docker image prune -f || echo "⚠️  Docker prune falló"
+          echo "✅ Imágenes dangling eliminadas"
+        continue-on-error: true
